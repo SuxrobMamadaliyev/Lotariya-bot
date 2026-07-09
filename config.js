@@ -8,6 +8,9 @@ const config = {
     : [],
   MONGO_URI: process.env.MONGO_URI,
   PORT: parseInt(process.env.PORT) || 10000,
+  // Render'dagi ochiq URL, masalan: https://lotariya-bot.onrender.com
+  // Bo'sh qoldirilsa bot polling rejimida ishlaydi (webhook o'chiq).
+  WEBHOOK_URL: process.env.WEBHOOK_URL || '',
   RATE_LIMIT: {
     MAX_MESSAGES: 5,
     WINDOW_MS: 3000,
