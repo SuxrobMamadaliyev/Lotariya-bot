@@ -1,6 +1,6 @@
 require('dotenv').config();
 
-const { Bot } = require('grammy');
+const { Bot, webhookCallback } = require('grammy');
 const express = require('express');
 const config  = require('./config');
 const { connectDB, writeLog } = require('./database');
@@ -33,6 +33,12 @@ const bot = new Bot(config.BOT_TOKEN);
 const app = express();
 app.use(express.json());
 app.get('/', (req, res) => res.send('Bot is running'));
+// UptimeRobot shu manzilga har necha daqiqada ping yuborib turadi (24/7 uyg'oq turishi uchun)
+app.get('/ping', (req, res) => res.status(200).send('pong'));
+
+// Webhook maxfiy yo'li — token'ning o'zidan foydalanamiz, shuning uchun uni
+// hech kim taxmin qilolmaydi (faqat Telegram va siz biladi).
+const WEBHOOK_PATH = `/webhook/${config.BOT_TOKEN}`;
 
 // ── Middleware ────────────────────────────────────────────────────────────────
 bot.use(async (ctx, next) => {
@@ -182,13 +188,31 @@ bot.catch(async (err) => {
 async function main() {
   try {
     await connectDB();
-    app.listen(config.PORT, () => console.log(`✅ Server ${config.PORT} portda`));
-    await bot.start({
-      onStart: (info) => {
-        console.log(`✅ Bot @${info.username} ishga tushdi`);
-        writeLog('info', 'Bot ishga tushdi', { username: info.username });
-      },
-    });
+
+    if (config.WEBHOOK_URL) {
+      // ── WEBHOOK REJIMI (Render / production) ──────────────────────────────
+      app.use(WEBHOOK_PATH, webhookCallback(bot, 'express'));
+
+      app.listen(config.PORT, async () => {
+        console.log(`✅ Server ${config.PORT} portda (webhook rejimi)`);
+        const fullUrl = `${config.WEBHOOK_URL}${WEBHOOK_PATH}`;
+        await bot.api.setWebhook(fullUrl, { drop_pending_updates: true });
+        const info = await bot.api.getMe();
+        console.log(`✅ Bot @${info.username} webhook orqali ishga tushdi`);
+        console.log(`🔗 Webhook: ${fullUrl}`);
+        await writeLog('info', 'Bot webhook rejimida ishga tushdi', { username: info.username, url: fullUrl });
+      });
+    } else {
+      // ── POLLING REJIMI (lokal test uchun) ─────────────────────────────────
+      app.listen(config.PORT, () => console.log(`✅ Server ${config.PORT} portda (polling rejimi)`));
+      await bot.api.deleteWebhook({ drop_pending_updates: true }).catch(() => {});
+      await bot.start({
+        onStart: (info) => {
+          console.log(`✅ Bot @${info.username} ishga tushdi (polling)`);
+          writeLog('info', 'Bot polling rejimida ishga tushdi', { username: info.username });
+        },
+      });
+    }
   } catch (err) {
     console.error('❌ Start xatosi:', err.message);
     process.exit(1);
