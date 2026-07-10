@@ -11,6 +11,10 @@ const userSchema = new mongoose.Schema({
   totalSpent:    { type: Number, default: 0 },
   isBlocked:     { type: Boolean, default: false },
   isAdmin:       { type: Boolean, default: false },
+  // ── Referral tizimi ──────────────────────────────────────────────────────
+  referredBy:         { type: Number, default: null },   // kim taklif qilgan (telegramId)
+  referralConfirmed:  { type: Boolean, default: false },  // majburiy kanallarga obuna bo'lganmi
+  confirmedReferrals: { type: Number, default: 0 },       // shu foydalanuvchi taklif qilgan va tasdiqlangan odamlar soni
   joinedAt:      { type: Date, default: Date.now },
   lastActivity:  { type: Date, default: Date.now },
 }, { timestamps: true });
