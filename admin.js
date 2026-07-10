@@ -262,7 +262,7 @@ async function showUsers(ctx, page = 0) {
     users.forEach((u, i) => {
       const name = [u.firstName, u.lastName].filter(Boolean).join(' ') || u.username || String(u.telegramId);
       text += `${page * PAGE_SIZE + i + 1}. ${escapeHtml(name)}${u.isBlocked ? ' 🚫' : ''}${u.isAdmin ? ' 👑' : ''}\n`;
-      text += `   🆔 <code>${u.telegramId}</code> | 🎟 ${u.totalTickets} ta\n`;
+      text += `   🆔 <code>${u.telegramId}</code> | 🎟 ${u.totalTickets} ta | 👥 ${u.confirmedReferrals || 0} referral\n`;
     });
 
     const totalPages = Math.ceil(total / PAGE_SIZE);
