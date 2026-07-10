@@ -22,6 +22,9 @@ const config = {
     MIN_MAX_TICKETS: 2,
     MAX_MAX_TICKETS: 100000,
   },
+  // Har bir tasdiqlangan referral g'olib tanlashda qo'shimcha necha "ovoz og'irligi" berishi.
+  // Masalan 1 => 3 ta referral chaqirgan foydalanuvchining bir biletdagi yutish ehtimoli 4 barobar oshadi.
+  REFERRAL_WIN_WEIGHT: 1,
   LOG_LEVELS: ['info', 'warn', 'error', 'payment', 'admin'],
 };
 
