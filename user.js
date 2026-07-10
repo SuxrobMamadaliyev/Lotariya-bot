@@ -1,7 +1,7 @@
 const { Lottery, Ticket, Payment, Winner, User } = require('./schema');
 const { writeLog } = require('./database');
-const { formatDate, escapeHtml, progressBar } = require('./functions');
-const { userKeyboard, lotteryCardKeyboard, paginationKeyboard } = require('./keyboards');
+const { formatDate, escapeHtml, progressBar, getReferralLink } = require('./functions');
+const { userKeyboard, lotteryBuyKeyboard, paginationKeyboard } = require('./keyboards');
 const { sendStarsInvoice } = require('./payment');
 
 const PAGE_SIZE = 5;
@@ -34,9 +34,9 @@ async function showActiveLotteries(ctx) {
         `📅 Boshlangan: ${formatDate(lottery.startedAt)}`;
 
       if (lottery.photoFileId) {
-        await ctx.replyWithPhoto(lottery.photoFileId, { caption: text, parse_mode: 'HTML', reply_markup: lotteryCardKeyboard(lottery) });
+        await ctx.replyWithPhoto(lottery.photoFileId, { caption: text, parse_mode: 'HTML', reply_markup: lotteryBuyKeyboard(lottery) });
       } else {
-        await ctx.reply(text, { parse_mode: 'HTML', reply_markup: lotteryCardKeyboard(lottery) });
+        await ctx.reply(text, { parse_mode: 'HTML', reply_markup: lotteryBuyKeyboard(lottery) });
       }
     }
   } catch (err) {
@@ -113,6 +113,9 @@ async function showProfile(ctx) {
       `🟢 <b>Faol biletlar:</b> ${user.activeTickets}\n` +
       `🏆 <b>Yutgan lotereyalar:</b> ${user.totalWins}\n` +
       `⭐ <b>Jami to'langan:</b> ${user.totalSpent} Stars\n\n` +
+      `👥 <b>Taklif qilingan do'stlar:</b> ${user.confirmedReferrals || 0} ta\n` +
+      `🍀 <i>Har bir do'stingiz kanalga obuna bo'lib qolsa, yutish ehtimolingiz oshadi!</i>\n` +
+      `🔗 <b>Sizning referral havolangiz:</b>\n<code>${getReferralLink(user.telegramId)}</code>\n\n` +
       `📅 <b>Ro'yxatdan o'tgan:</b> ${formatDate(user.joinedAt)}`;
 
     await ctx.reply(text, { parse_mode: 'HTML', reply_markup: userKeyboard });
@@ -203,41 +206,82 @@ async function showGifts(ctx) {
   }
 }
 
+async function buyTicketCore(ctx, lotteryId) {
+  const lottery = await Lottery.findById(lotteryId);
+  if (!lottery || lottery.status !== 'active') { throw new Error('NOT_ACTIVE'); }
+  if (lottery.soldTickets >= lottery.maxTickets) { throw new Error('SOLD_OUT'); }
+  await sendStarsInvoice(ctx, ctx.from.id, lottery);
+}
+
 async function handleBuyTicket(ctx, lotteryId) {
   try {
-    const lottery = await Lottery.findById(lotteryId);
-    if (!lottery || lottery.status !== 'active') { await ctx.answerCallbackQuery('❌ Bu lotereya faol emas.'); return; }
-    if (lottery.soldTickets >= lottery.maxTickets) { await ctx.answerCallbackQuery('❌ Barcha biletlar sotilgan!'); return; }
+    await buyTicketCore(ctx, lotteryId);
     await ctx.answerCallbackQuery();
-    await sendStarsInvoice(ctx, ctx.from.id, lottery);
   } catch (err) {
-    await writeLog('error', 'handleBuyTicket xatosi', { err: err.message });
-    await ctx.answerCallbackQuery('❌ Xato yuz berdi.');
+    const msg = err.message === 'NOT_ACTIVE' ? '❌ Bu lotereya faol emas.'
+      : err.message === 'SOLD_OUT' ? '❌ Barcha biletlar sotilgan!'
+      : '❌ Xato yuz berdi.';
+    if (err.message !== 'NOT_ACTIVE' && err.message !== 'SOLD_OUT') {
+      await writeLog('error', 'handleBuyTicket xatosi', { err: err.message });
+    }
+    await ctx.answerCallbackQuery(msg);
   }
+}
+
+// Kanal postidagi "Bilet sotib olish" tugmasi orqali /start deep-link bilan
+// kelgan foydalanuvchi uchun — to'g'ridan-to'g'ri to'lov oynasini ochadi.
+async function handleBuyTicketFromStart(ctx, lotteryId) {
+  try {
+    await buyTicketCore(ctx, lotteryId);
+  } catch (err) {
+    const msg = err.message === 'NOT_ACTIVE' ? '❌ Bu lotereya hozir faol emas.'
+      : err.message === 'SOLD_OUT' ? '❌ Afsuski, barcha biletlar sotilgan!'
+      : '❌ Xato yuz berdi, birozdan so\'ng qayta urinib ko\'ring.';
+    if (err.message !== 'NOT_ACTIVE' && err.message !== 'SOLD_OUT') {
+      await writeLog('error', 'handleBuyTicketFromStart xatosi', { err: err.message });
+    }
+    await ctx.reply(msg, { reply_markup: userKeyboard });
+  }
+}
+
+async function buildLotteryDetailText(ctx, lotteryId) {
+  const lottery = await Lottery.findById(lotteryId);
+  if (!lottery) return null;
+  const userTickets = await Ticket.countDocuments({ lotteryId: lottery._id, userId: ctx.from.id });
+  const bar = progressBar(lottery.soldTickets, lottery.maxTickets);
+  const text =
+    `🎰 <b>№${lottery.number} LOTEREYA — Batafsil</b>\n\n` +
+    `🎁 <b>Sovg'a:</b> ${escapeHtml(lottery.giftName)}\n` +
+    `⭐ <b>Qiymati:</b> ${lottery.giftValue} Stars\n` +
+    `🎟 <b>Bilet narxi:</b> ${lottery.ticketPrice} ⭐\n\n` +
+    `📈 <b>Holat:</b>\n${bar}\n   Sotilgan: ${lottery.soldTickets} / ${lottery.maxTickets}\n` +
+    `👥 Ishtirokchilar: ${lottery.participants}\n\n` +
+    `🎟 <b>Sizning biletlaringiz:</b> ${userTickets} ta\n` +
+    `📅 <b>Boshlangan:</b> ${formatDate(lottery.startedAt)}`;
+  return { lottery, text };
 }
 
 async function handleLotteryDetail(ctx, lotteryId) {
   try {
-    const lottery = await Lottery.findById(lotteryId);
-    if (!lottery) { await ctx.answerCallbackQuery('❌ Lotereya topilmadi.'); return; }
-
-    const userTickets = await Ticket.countDocuments({ lotteryId: lottery._id, userId: ctx.from.id });
-    const bar = progressBar(lottery.soldTickets, lottery.maxTickets);
-    const text =
-      `🎰 <b>№${lottery.number} LOTEREYA — Batafsil</b>\n\n` +
-      `🎁 <b>Sovg'a:</b> ${escapeHtml(lottery.giftName)}\n` +
-      `⭐ <b>Qiymati:</b> ${lottery.giftValue} Stars\n` +
-      `🎟 <b>Bilet narxi:</b> ${lottery.ticketPrice} ⭐\n\n` +
-      `📈 <b>Holat:</b>\n${bar}\n   Sotilgan: ${lottery.soldTickets} / ${lottery.maxTickets}\n` +
-      `👥 Ishtirokchilar: ${lottery.participants}\n\n` +
-      `🎟 <b>Sizning biletlaringiz:</b> ${userTickets} ta\n` +
-      `📅 <b>Boshlangan:</b> ${formatDate(lottery.startedAt)}`;
-
+    const result = await buildLotteryDetailText(ctx, lotteryId);
+    if (!result) { await ctx.answerCallbackQuery('❌ Lotereya topilmadi.'); return; }
     await ctx.answerCallbackQuery();
-    await ctx.reply(text, { parse_mode: 'HTML', reply_markup: lotteryCardKeyboard(lottery) });
+    await ctx.reply(result.text, { parse_mode: 'HTML', reply_markup: lotteryBuyKeyboard(result.lottery) });
   } catch (err) {
     await writeLog('error', 'handleLotteryDetail xatosi', { err: err.message });
     await ctx.answerCallbackQuery('❌ Xato yuz berdi.');
+  }
+}
+
+// Kanal postidagi "Batafsil" tugmasi orqali /start deep-link bilan kelganda.
+async function handleLotteryDetailFromStart(ctx, lotteryId) {
+  try {
+    const result = await buildLotteryDetailText(ctx, lotteryId);
+    if (!result) { await ctx.reply('❌ Lotereya topilmadi.', { reply_markup: userKeyboard }); return; }
+    await ctx.reply(result.text, { parse_mode: 'HTML', reply_markup: lotteryBuyKeyboard(result.lottery) });
+  } catch (err) {
+    await writeLog('error', 'handleLotteryDetailFromStart xatosi', { err: err.message });
+    await ctx.reply('❌ Xato yuz berdi.', { reply_markup: userKeyboard });
   }
 }
 
@@ -245,4 +289,5 @@ module.exports = {
   sendUserMenu, showActiveLotteries, showMyTickets, showLastWinners,
   showProfile, showMyPayments, showHistory, showHelp,
   showAdminContact, showGifts, handleBuyTicket, handleLotteryDetail,
+  handleBuyTicketFromStart, handleLotteryDetailFromStart,
 };
