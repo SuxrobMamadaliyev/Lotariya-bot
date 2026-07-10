@@ -4,7 +4,7 @@ const { Bot, webhookCallback } = require('grammy');
 const express = require('express');
 const config  = require('./config');
 const { connectDB, writeLog } = require('./database');
-const { checkSpam, isAdmin, upsertUser, checkSubscription } = require('./functions');
+const { checkSpam, isAdmin, upsertUser, checkSubscription, confirmReferralIfNeeded, revokeReferralIfNeeded } = require('./functions');
 const { subscribeKeyboard, adminKeyboard } = require('./keyboards');
 const { handleCallback } = require('./callback');
 const { handlePreCheckout, handleSuccessfulPayment } = require('./payment');
@@ -26,7 +26,9 @@ const {
   sendUserMenu, showActiveLotteries, showMyTickets,
   showLastWinners, showProfile, showMyPayments,
   showHistory, showHelp, showAdminContact, showGifts,
+  handleBuyTicketFromStart, handleLotteryDetailFromStart,
 } = require('./user');
+const { Channel, User } = require('./schema');
 
 const bot = new Bot(config.BOT_TOKEN);
 
@@ -49,7 +51,8 @@ bot.use(async (ctx, next) => {
       return;
     }
   }
-  await upsertUser(ctx.from);
+  const { isNew } = await upsertUser(ctx.from);
+  ctx.isNewUser = isNew;
   return next();
 });
 
@@ -57,7 +60,21 @@ bot.use(async (ctx, next) => {
 bot.command('start', async (ctx) => {
   try {
     const userId = ctx.from.id;
+    const payload = (ctx.match || '').toString().trim();
+
+    // ── Referral: yangi foydalanuvchi kimningdir havolasi orqali kirgan bo'lsa ──
+    if (ctx.isNewUser && payload.startsWith('ref_')) {
+      const referrerId = parseInt(payload.slice(4), 10);
+      if (referrerId && referrerId !== userId) {
+        const referrerExists = await User.exists({ telegramId: referrerId });
+        if (referrerExists) {
+          await User.updateOne({ telegramId: userId }, { $set: { referredBy: referrerId } });
+        }
+      }
+    }
+
     if (await isAdmin(userId)) { await sendAdminMenu(ctx); return; }
+
     const { ok, missing } = await checkSubscription(bot, userId);
     if (!ok) {
       await ctx.reply(
@@ -66,6 +83,20 @@ bot.command('start', async (ctx) => {
       );
       return;
     }
+
+    // Obuna tasdiqlangan bo'lsa — referalni ham tasdiqlaymiz (birinchi marta bo'lsa)
+    await confirmReferralIfNeeded(userId);
+
+    // ── Kanal postidagi tugmalar orqali kelgan bo'lsa ──
+    if (payload.startsWith('buy_')) {
+      await handleBuyTicketFromStart(ctx, payload.slice(4));
+      return;
+    }
+    if (payload.startsWith('detail_')) {
+      await handleLotteryDetailFromStart(ctx, payload.slice(7));
+      return;
+    }
+
     await sendUserMenu(ctx);
   } catch (err) {
     await writeLog('error', '/start xatosi', { err: err.message });
@@ -84,6 +115,24 @@ bot.on('message:successful_payment', async (ctx) => { await handleSuccessfulPaym
 
 // ── Callback ──────────────────────────────────────────────────────────────────
 bot.on('callback_query:data', async (ctx) => { await handleCallback(ctx, bot); });
+
+// ── Kanaldan chiqib ketishni kuzatish (referal bekor qilish uchun) ────────────
+bot.on('chat_member', async (ctx) => {
+  try {
+    const chatId = String(ctx.chatMember.chat.id);
+    const isTracked = await Channel.exists({ chatId });
+    if (!isTracked) return;
+
+    const newStatus = ctx.chatMember.new_chat_member.status;
+    const leftStatuses = ['left', 'kicked'];
+    if (!leftStatuses.includes(newStatus)) return;
+
+    const targetUserId = ctx.chatMember.new_chat_member.user.id;
+    await revokeReferralIfNeeded(bot, targetUserId);
+  } catch (err) {
+    await writeLog('error', 'chat_member xatosi', { err: err.message });
+  }
+});
 
 // ── Matn xabarlari ────────────────────────────────────────────────────────────
 bot.on('message:text', async (ctx) => {
@@ -184,6 +233,14 @@ bot.catch(async (err) => {
   await writeLog('error', 'Bot xatosi', { err: err.error?.message || String(err.error) });
 });
 
+// Standart update turlariga qo'shimcha ravishda "chat_member"ni ham yoqamiz —
+// aks holda Telegram foydalanuvchi kanaldan chiqib ketganini bizga bildirmaydi
+// va referal bekor qilish ishlamay qoladi.
+const ALLOWED_UPDATES = [
+  'message', 'edited_message', 'callback_query',
+  'pre_checkout_query', 'chat_member', 'my_chat_member',
+];
+
 // ── Ishga tushurish ───────────────────────────────────────────────────────────
 async function main() {
   try {
@@ -196,7 +253,7 @@ async function main() {
       app.listen(config.PORT, async () => {
         console.log(`✅ Server ${config.PORT} portda (webhook rejimi)`);
         const fullUrl = `${config.WEBHOOK_URL}${WEBHOOK_PATH}`;
-        await bot.api.setWebhook(fullUrl, { drop_pending_updates: true });
+        await bot.api.setWebhook(fullUrl, { drop_pending_updates: true, allowed_updates: ALLOWED_UPDATES });
         const info = await bot.api.getMe();
         console.log(`✅ Bot @${info.username} webhook orqali ishga tushdi`);
         console.log(`🔗 Webhook: ${fullUrl}`);
@@ -207,6 +264,7 @@ async function main() {
       app.listen(config.PORT, () => console.log(`✅ Server ${config.PORT} portda (polling rejimi)`));
       await bot.api.deleteWebhook({ drop_pending_updates: true }).catch(() => {});
       await bot.start({
+        allowed_updates: ALLOWED_UPDATES,
         onStart: (info) => {
           console.log(`✅ Bot @${info.username} ishga tushdi (polling)`);
           writeLog('info', 'Bot polling rejimida ishga tushdi', { username: info.username });
