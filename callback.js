@@ -1,5 +1,5 @@
 const { writeLog } = require('./database');
-const { checkSubscription } = require('./functions');
+const { checkSubscription, confirmReferralIfNeeded } = require('./functions');
 const { subscribeKeyboard } = require('./keyboards');
 const { handleBuyTicket, handleLotteryDetail, showMyTickets, showMyPayments } = require('./user');
 const { handleLotteryAction, handleChannelSelect, showFinishedLotteries, showUsers, showPayments } = require('./admin');
@@ -14,6 +14,7 @@ async function handleCallback(ctx, bot) {
     if (data === 'check_subscription') {
       const { ok, missing } = await checkSubscription(bot, userId);
       if (ok) {
+        await confirmReferralIfNeeded(userId);
         await ctx.answerCallbackQuery('✅ Tekshirildi!');
         try { await ctx.deleteMessage(); } catch {}
         const { sendUserMenu } = require('./user');
