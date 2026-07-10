@@ -1,4 +1,5 @@
 const { Keyboard, InlineKeyboard } = require('grammy');
+const config = require('./config');
 
 const adminKeyboard = new Keyboard()
   .text('🎰 Lotereya yaratish').text('📋 Faol lotereyalar').row()
@@ -31,6 +32,20 @@ function subscribeKeyboard(channels) {
 }
 
 function lotteryCardKeyboard(lottery) {
+  // Kanal postidagi tugmalar botga (private chatga) olib o'tadi — shu yerda
+  // "Bilet sotib olish" bosilganda foydalanuvchi to'g'ridan-to'g'ri Stars
+  // to'lov oynasini ko'radi.
+  const buyUrl = `https://t.me/${config.BOT_USERNAME}?start=buy_${lottery._id}`;
+  const detailUrl = `https://t.me/${config.BOT_USERNAME}?start=detail_${lottery._id}`;
+  return new InlineKeyboard()
+    .url('🎟 Bilet sotib olish', buyUrl)
+    .url('📄 Batafsil', detailUrl);
+}
+
+// Bot ichida (private chatda) ko'rsatiladigan lotereya kartochkasi — bu yerda
+// foydalanuvchi allaqachon bot bilan chatda, shuning uchun oddiy callback
+// tugmalar ishlatiladi (tezroq, sahifa qayta ochilmaydi).
+function lotteryBuyKeyboard(lottery) {
   return new InlineKeyboard()
     .text('🎟 Bilet sotib olish', `buy_ticket:${lottery._id}`)
     .text('📄 Batafsil', `lottery_detail:${lottery._id}`);
@@ -75,7 +90,7 @@ const backKeyboard = new InlineKeyboard().text('◀️ Orqaga', 'go_back');
 
 module.exports = {
   adminKeyboard, userKeyboard, subscribeKeyboard,
-  lotteryCardKeyboard, lotteryAdminKeyboard,
+  lotteryCardKeyboard, lotteryBuyKeyboard, lotteryAdminKeyboard,
   channelSelectKeyboard, paginationKeyboard,
   cancelKeyboard, backKeyboard,
 };
