@@ -49,20 +49,22 @@ async function isAdmin(userId) {
 
 async function upsertUser(from) {
   try {
+    const existing = await User.exists({ telegramId: from.id });
     const update = {
       firstName:    from.first_name || '',
       lastName:     from.last_name  || '',
       username:     from.username   || '',
       lastActivity: new Date(),
     };
-    return await User.findOneAndUpdate(
+    const user = await User.findOneAndUpdate(
       { telegramId: from.id },
       { $set: update, $setOnInsert: { telegramId: from.id, joinedAt: new Date() } },
       { upsert: true, new: true }
     );
+    return { user, isNew: !existing };
   } catch (err) {
     writeLog('error', 'upsertUser xatosi', { err: err.message, userId: from.id });
-    return null;
+    return { user: null, isNew: false };
   }
 }
 
@@ -85,6 +87,44 @@ async function checkSubscription(bot, userId) {
   } catch (err) {
     writeLog('error', 'checkSubscription xatosi', { err: err.message });
     return { ok: true, missing: [] };
+  }
+}
+
+function getReferralLink(telegramId) {
+  return `https://t.me/${config.BOT_USERNAME}?start=ref_${telegramId}`;
+}
+
+// Foydalanuvchi kimningdir referral havolasi orqali kirgan bo'lsa va endi
+// barcha majburiy kanallarga obuna bo'lsa — referalni tasdiqlaymiz va
+// taklif qilgan odamning hisobiga qo'shamiz. Faqat bir marta ishlaydi.
+async function confirmReferralIfNeeded(userId) {
+  try {
+    const user = await User.findOne({ telegramId: userId });
+    if (!user || !user.referredBy || user.referralConfirmed) return;
+
+    await User.updateOne({ telegramId: userId }, { $set: { referralConfirmed: true } });
+    await User.updateOne({ telegramId: user.referredBy }, { $inc: { confirmedReferrals: 1 } });
+    writeLog('info', 'Referral tasdiqlandi', { userId, referrerId: user.referredBy });
+  } catch (err) {
+    writeLog('error', 'confirmReferralIfNeeded xatosi', { err: err.message, userId });
+  }
+}
+
+// Foydalanuvchi majburiy kanallardan birortasidan chiqib ketsa, avval
+// tasdiqlangan referali bekor qilinadi va taklif qilgan odamning hisobidan ayiriladi.
+async function revokeReferralIfNeeded(bot, userId) {
+  try {
+    const user = await User.findOne({ telegramId: userId });
+    if (!user || !user.referredBy || !user.referralConfirmed) return;
+
+    const { ok } = await checkSubscription(bot, userId);
+    if (ok) return; // hali ham barcha kanallarga obuna — referral bekor qilinmaydi
+
+    await User.updateOne({ telegramId: userId }, { $set: { referralConfirmed: false } });
+    await User.updateOne({ telegramId: user.referredBy }, { $inc: { confirmedReferrals: -1 } });
+    writeLog('info', 'Referral bekor qilindi (kanaldan chiqib ketdi)', { userId, referrerId: user.referredBy });
+  } catch (err) {
+    writeLog('error', 'revokeReferralIfNeeded xatosi', { err: err.message, userId });
   }
 }
 
@@ -145,4 +185,5 @@ module.exports = {
   checkSpam, isSuperAdmin, isAdmin, upsertUser,
   checkSubscription, randomInt, formatDate,
   getUserName, escapeHtml, getSetting, setSetting, progressBar,
+  getReferralLink, confirmReferralIfNeeded, revokeReferralIfNeeded,
 };
